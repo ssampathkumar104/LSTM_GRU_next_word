@@ -1,0 +1,125 @@
+Your code and setup are mostly correct, but **the issue where the model always predicts "the"** as the next word stems from **imbalanced token frequency and possibly under-trained or overfit model behavior**. Let’s walk through the causes and **fixes**:
+
+---
+
+## ✅ Why Your Model Always Predicts "the":
+
+1. **"the" is the most frequent word** in English—and probably in the Hamlet dataset.
+2. **Categorical crossentropy + imbalanced labels**: The model may learn to **always predict the most frequent token** to optimize accuracy, leading to artificially high validation accuracy (\~0.7 in your case), but **poor diversity and understanding**.
+3. **Poor sequence variety**: Using only line-by-line tokenization (`text.split('\n')`) instead of a continuous text window reduces language structure learning.
+4. **No temperature or randomness** in prediction: Using `np.argmax()` causes the model to always pick the most probable (often boring) choice.
+5. **Small dataset / shallow architecture**: You might not be training long enough or with rich enough embeddings/context.
+
+---
+
+## ✅ Fixes
+
+Here’s how you can improve predictions:
+
+---
+
+### ✅ 1. **Tokenize the entire text as a sliding window, not line-by-line**
+
+```python
+# Instead of line-by-line, generate n-grams across the whole text
+token_list = tokenizer.texts_to_sequences([text])[0]
+input_sequences = []
+for i in range(1, len(token_list)):
+    n_gram_sequence = token_list[:i+1]
+    input_sequences.append(n_gram_sequence)
+```
+
+✅ This preserves **language continuity** and helps LSTM learn better transitions.
+
+---
+
+### ✅ 2. **Use `categorical_accuracy` as a metric, not just `accuracy`**
+
+Make sure you're tracking **how well it predicts the right word**, not just getting lucky with "the".
+
+---
+
+### ✅ 3. **Use sampling (temperature)** for better word prediction\*\*
+
+Replace:
+
+```python
+predicted_word_index = np.argmax(predicted, axis=1)
+```
+
+With this **temperature sampling**:
+
+```python
+def sample_with_temperature(preds, temperature=1.0):
+    preds = np.asarray(preds).astype('float64')
+    preds = np.log(preds + 1e-7) / temperature
+    exp_preds = np.exp(preds)
+    preds = exp_preds / np.sum(exp_preds)
+    probas = np.random.multinomial(1, preds, 1)
+    return np.argmax(probas)
+```
+
+Update your `predict_next_word()` function:
+
+```python
+def predict_next_word(model, tokenizer, text, max_sequence_len, temperature=1.0):
+    token_list = tokenizer.texts_to_sequences([text])[0]
+    token_list = token_list[-(max_sequence_len-1):]
+    token_list = pad_sequences([token_list], maxlen=max_sequence_len-1, padding='pre')
+    predicted = model.predict(token_list, verbose=0)[0]
+    predicted_index = sample_with_temperature(predicted, temperature)
+    
+    for word, index in tokenizer.word_index.items():
+        if index == predicted_index:
+            return word
+    return None
+```
+
+Try with:
+
+```python
+next_word = predict_next_word(model, tokenizer, input_text, max_sequence_len, temperature=0.8)
+```
+
+---
+
+### ✅ 4. **Try increasing embedding size and training epochs**
+
+You’re using:
+
+```python
+Embedding(total_words, 100)
+```
+
+Try increasing to 128 or 256 and training longer **with early stopping**. Also, increase LSTM size if RAM allows.
+
+---
+
+### ✅ 5. **Generate longer sequences to assess quality**
+
+Add a loop to generate full sentences, not just one word:
+
+```python
+def generate_text(seed_text, next_words, model, tokenizer, max_sequence_len, temperature=1.0):
+    for _ in range(next_words):
+        next_word = predict_next_word(model, tokenizer, seed_text, max_sequence_len, temperature)
+        seed_text += " " + next_word
+    return seed_text
+
+print(generate_text("To be or", 10, model, tokenizer, max_sequence_len, temperature=0.8))
+```
+
+---
+
+## ✅ Summary of Changes
+
+| Issue                              | Fix                                                             |
+| ---------------------------------- | --------------------------------------------------------------- |
+| "the" always predicted             | Use **temperature-based sampling**                              |
+| Poor training data variety         | Use **sliding window** over full text                           |
+| Overfitting or poor generalization | Add **Dropout**, tune **model size**, use **early stopping**    |
+| Shallow sequences                  | Generate **longer text**, not just 1-word prediction            |
+| Evaluation metric misleading       | Consider **categorical accuracy** and **validation perplexity** |
+
+---
+
